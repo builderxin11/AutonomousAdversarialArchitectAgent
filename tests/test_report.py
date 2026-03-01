@@ -233,3 +233,21 @@ class TestFormatText:
         report = build_json_report(sample_state, target_file="src/")
         text = format_text(report)
         assert "File: /src/handler.py" in text
+
+    def test_schema_tag(self, sample_state):
+        sample_state["logic_flaws"] = [
+            {
+                "flaw_id": "SCHEMA-001",
+                "type": "tool_schema_poisoning",
+                "severity": "critical",
+                "function": "search_docs",
+                "line": 15,
+                "description": "Hidden exfiltration instruction",
+                "trust_assumption": "N/A",
+                "exploitation_vector": "N/A",
+            }
+        ]
+        report = build_json_report(sample_state, target_file="v.py")
+        text = format_text(report)
+        assert "[SCHEMA]" in text
+        assert "SCHEMA-001" in text

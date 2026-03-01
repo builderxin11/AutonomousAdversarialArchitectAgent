@@ -120,7 +120,8 @@ def format_text(report: Dict[str, Any]) -> str:
     w("-" * 40)
     for flaw in report.get("vulnerabilities", []):
         cross_tag = "[CROSS-FILE] " if flaw.get("cross_file") else ""
-        w(f"  {cross_tag}[{flaw.get('severity', 'unknown').upper()}] {flaw.get('flaw_id', 'N/A')}")
+        schema_tag = "[SCHEMA] " if flaw.get("type") == "tool_schema_poisoning" else ""
+        w(f"  {cross_tag}{schema_tag}[{flaw.get('severity', 'unknown').upper()}] {flaw.get('flaw_id', 'N/A')}")
         w(f"    {flaw.get('description', '')}")
         file_info = f"File: {flaw['file']} | " if flaw.get("file") else ""
         w(f"    {file_info}Function: {flaw.get('function', 'N/A')} | Line: {flaw.get('line', 'N/A')}")

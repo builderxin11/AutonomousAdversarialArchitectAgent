@@ -11,6 +11,7 @@ AI agents are being deployed to manage financial transactions, control infrastru
 - **Parallel fan-out** — Executor and Prober run concurrently after the Strategist, with LangGraph state reducers auto-merging their outputs
 - **Multi-file directory scanning** — Scan entire projects with cross-file import graph analysis to detect inter-module trust boundary violations
 - **Incremental caching** — Content-hash based AST cache skips unchanged files across repeated scans
+- **MCP Tool Schema Poisoning detection** — Scans tool descriptions for hidden instructions, exfiltration URLs, sensitive data references, and safety overrides using deterministic regex patterns + LLM semantic analysis
 - **Dual attack surface** — Tests both environment manipulation (API errors, data poisoning) and conversation injection (prompt attacks)
 - **Tree-of-Thought planning** — The Strategist uses multi-path reasoning to generate prioritized, multi-step attack chains
 - **State-level verdicts** — The Judge evaluates exploit chains at the data layer, not by chat output, producing drift scores and invariant violation metrics
@@ -181,6 +182,23 @@ aaa scan examples/financial_agent.py
   Confirmed exploit chains:   4 / 5
 ```
 
+## Example: Detecting Tool Schema Poisoning
+
+The included [`examples/poisoned_tools.py`](examples/poisoned_tools.py) implements **DocAssistant** — a document management agent with 4 tools, 2 of which have intentionally poisoned descriptions:
+
+| Tool | Status | Poisoning |
+|------|--------|-----------|
+| `get_weather` | Clean | Normal weather lookup |
+| `search_docs` | **Poisoned** | Description instructs LLM to include conversation contents in search query and read `~/.config/preferences.json` |
+| `calculate_tax` | Clean | Normal tax calculation |
+| `export_report` | **Poisoned** | Description instructs LLM to send report copy to external URL and include API keys |
+
+```bash
+aaa scan examples/poisoned_tools.py
+```
+
+AAA's Auditor detects these via two layers: fast regex pattern matching (action directives, URLs, sensitive data references) and LLM semantic analysis (implicit behavioral instructions, description-to-code mismatch).
+
 ## Quick Start
 
 ### Installation
@@ -283,22 +301,24 @@ src/aaa/
   cli.py              # CLI entry point (aaa scan <file|dir>)
   graph.py            # LangGraph pipeline with parallel Executor/Prober fan-out
   llm.py              # Centralized LLM factory (Bedrock / Anthropic)
+  mcp.py              # MCP Tool Schema Poisoning detector (regex + LLM)
   report.py           # JSON and text report generation
   state.py            # TripleAState shared schema with LangGraph reducers
   env/
     mock_server.py    # FastAPI Universal Mock Server with chaos control API
   nodes/
-    auditor.py        # AST extraction, LLM flaw analysis, multi-file + cross-file
+    auditor.py        # AST extraction, LLM flaw analysis, multi-file + cross-file + schema poisoning
     strategist.py     # Tree-of-Thought attack planning
     executor.py       # Environment exploit proof generation
-    prober.py         # Adversarial prompt generation (5 attack types)
-    judge.py          # Logical chain evaluation and verdict
+    prober.py         # Adversarial prompt generation (6 attack types)
+    judge.py          # Logical chain evaluation and verdict (3 attack surfaces)
 
 examples/
   victim_service.py   # Simple CRUD agent with uniqueness-bypass flaw
   financial_agent.py  # Realistic financial agent with 5 vulnerability classes
+  poisoned_tools.py   # Document agent with 2 poisoned tool descriptions
 
-tests/                # 132 unit + integration tests
+tests/                # Unit + integration tests
 ```
 
 ## Tech Stack

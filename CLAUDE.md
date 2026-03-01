@@ -100,5 +100,5 @@ class TripleAState(TypedDict):
 - [x] **Phase 5**: Executor/Prober parallel fan-out with LangGraph state reducers.
 - [x] **Phase 6**: Multi-file directory scanning with cross-file import analysis.
 - [x] **Phase 7**: Incremental scanning via content-hash AST cache.
-- [ ] **Phase 8**: MCP Tool Schema Poisoning detection.
+- [x] **Phase 8**: MCP Tool Schema Poisoning detection.
 - [ ] **Phase 9**: tree-sitter integration for multi-language support.

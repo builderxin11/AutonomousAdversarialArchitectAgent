@@ -41,7 +41,8 @@ class LogicFlaw(BaseModel):
     type: str = Field(
         description=(
             "Category: 'conditional_guard_bypass' | 'implicit_trust_mutable_state' | "
-            "'missing_concurrency_guard' | 'prompt_code_invariant_mismatch' | 'other'"
+            "'missing_concurrency_guard' | 'prompt_code_invariant_mismatch' | "
+            "'tool_schema_poisoning' | 'other'"
         )
     )
     severity: str = Field(description="'critical' | 'high' | 'medium' | 'low'")
@@ -199,6 +200,10 @@ _ANALYSIS_PROMPT = textwrap.dedent("""\
        that the code does NOT enforce (e.g., "always ensure uniqueness" but
        the check can be bypassed).
     5. **other** — Any additional logic flaw worth reporting.
+    6. **tool_schema_poisoning** — Tool descriptions or docstrings that contain
+       hidden behavioral instructions, references to sensitive data/files,
+       exfiltration URLs, or commands to bypass safety checks.  These could be
+       introduced via supply chain (importing a poisoned tool library).
 
     For each flaw, provide:
     - A unique ``flaw_id`` (e.g., FLAW-001)
@@ -441,6 +446,76 @@ def _analyze_cross_file(
 
 
 # ---------------------------------------------------------------------------
+# 2e. Schema Poisoning Check
+# ---------------------------------------------------------------------------
+
+
+def _run_schema_poisoning_check(
+    tool_schemas: List[Dict[str, Any]],
+    source_code: str,
+    cache_dir: Optional[Path],
+) -> List[Dict[str, Any]]:
+    """Run deterministic + LLM schema poisoning analysis.
+
+    Returns deduplicated flaw dicts tagged with ``type="tool_schema_poisoning"``.
+    """
+    from aaa.mcp import analyze_tool_schemas_llm, scan_tool_descriptions
+
+    # --- Layer 1: deterministic pattern scan ---
+    findings = scan_tool_descriptions(tool_schemas)
+    pattern_flaws: List[Dict[str, Any]] = []
+    for i, f in enumerate(findings, 1):
+        pattern_flaws.append(
+            {
+                "flaw_id": f"SCHEMA-P{i:03d}",
+                "type": "tool_schema_poisoning",
+                "severity": "critical" if f.risk_level == "critical" else (
+                    "high" if f.risk_level == "high" else "medium"
+                ),
+                "function": f.tool_name,
+                "line": f.lineno,
+                "description": (
+                    f"Pattern '{f.pattern}' detected in tool '{f.tool_name}' "
+                    f"description: \"{f.matched_text}\". {f.explanation}"
+                ),
+                "trust_assumption": (
+                    "Tool descriptions are treated as trusted context by the LLM"
+                ),
+                "exploitation_vector": (
+                    f"Invoke tool '{f.tool_name}' — the LLM may follow the hidden "
+                    f"instruction embedded in its description"
+                ),
+            }
+        )
+
+    # --- Layer 2: LLM semantic analysis ---
+    llm_flaws = analyze_tool_schemas_llm(tool_schemas, source_code)
+
+    # --- Deduplication: if same tool + same type, keep more detailed ---
+    seen_tools: set[str] = set()
+    combined: List[Dict[str, Any]] = []
+
+    # LLM flaws are generally more detailed, add them first
+    for flaw in llm_flaws:
+        key = flaw.get("function", "")
+        seen_tools.add(key)
+        flaw["type"] = "tool_schema_poisoning"
+        combined.append(flaw)
+
+    # Add pattern flaws only if the tool wasn't already covered by LLM
+    for flaw in pattern_flaws:
+        key = flaw.get("function", "")
+        if key not in seen_tools:
+            combined.append(flaw)
+            seen_tools.add(key)
+        else:
+            # Still add if it found a different pattern aspect
+            combined.append(flaw)
+
+    return combined
+
+
+# ---------------------------------------------------------------------------
 # 3. LangGraph Node Function
 # ---------------------------------------------------------------------------
 
@@ -531,6 +606,13 @@ def auditor_node(state: TripleAState) -> dict:
         _enrich_system_prompt(existing_metadata, merged_extracted)
         _enrich_tool_schemas(existing_metadata, merged_extracted)
 
+        # Schema poisoning check
+        if existing_metadata.get("tool_schemas"):
+            schema_flaws = _run_schema_poisoning_check(
+                existing_metadata["tool_schemas"], concatenated, cache_dir,
+            )
+            all_flaws.extend(schema_flaws)
+
         flaw_summary_lines = [
             f"Audit complete. Scanned {len(files)} file(s), "
             f"found {len(all_flaws)} logic flaw(s) "
@@ -562,6 +644,13 @@ def auditor_node(state: TripleAState) -> dict:
 
     _enrich_system_prompt(existing_metadata, metadata)
     _enrich_tool_schemas(existing_metadata, metadata)
+
+    # Schema poisoning check
+    if existing_metadata.get("tool_schemas"):
+        schema_flaws = _run_schema_poisoning_check(
+            existing_metadata["tool_schemas"], source_code, cache_dir,
+        )
+        flaws.extend(schema_flaws)
 
     flaw_summary_lines = [f"Audit complete. Found {len(flaws)} logic flaw(s)."]
     for f in flaws:
