@@ -57,6 +57,11 @@ def build_json_report(state: TripleAState, target_file: str) -> Dict[str, Any]:
             "total_chains": metrics.get("total_chains", 0),
         },
         "vulnerabilities": state.get("logic_flaws", []),
+        "strategic_plan": {
+            "strategies": tree.get("strategies", []),
+            "threat_model_summary": tree.get("threat_model_summary"),
+            "prioritization_rationale": tree.get("prioritization_rationale"),
+        },
         "exploit_proofs": {
             "proofs": tree.get("proofs", []),
             "overall_risk_assessment": tree.get("overall_risk_assessment"),
@@ -99,8 +104,32 @@ def format_text(report: Dict[str, Any]) -> str:
         w(f"    Function: {flaw.get('function', 'N/A')} | Line: {flaw.get('line', 'N/A')}")
         w("")
 
-    # 2. Exploit proofs
-    w("[2] ENVIRONMENT EXPLOIT PROOFS (Executor)")
+    # 2. Strategic plan
+    w("[2] STRATEGIC ATTACK PLAN (Strategist)")
+    w("-" * 40)
+    plan = report.get("strategic_plan", {})
+    for strat in plan.get("strategies", []):
+        flaw_ids = ", ".join(strat.get("target_flaw_ids", []))
+        w(f"  [P{strat.get('priority', '?')}] {strat.get('strategy_id', 'N/A')} ({strat.get('attack_surface', 'N/A')})")
+        w(f"    Targets: {flaw_ids}")
+        w(f"    Expected outcome: {strat.get('expected_outcome', 'N/A')}")
+        steps = strat.get("steps", [])
+        if steps:
+            w("    Steps:")
+            for i, step in enumerate(steps, 1):
+                w(f"      {i}. [{step.get('surface', '?')}] {step.get('action', '')}")
+                w(f"         Mechanism: {step.get('chaos_mechanism', '')}")
+        w("")
+    summary = plan.get("threat_model_summary")
+    if summary:
+        w(f"  Threat model: {summary}")
+    rationale = plan.get("prioritization_rationale")
+    if rationale:
+        w(f"  Prioritization: {rationale}")
+        w("")
+
+    # 3. Exploit proofs
+    w("[3] ENVIRONMENT EXPLOIT PROOFS (Executor)")
     w("-" * 40)
     proofs_section = report.get("exploit_proofs", {})
     for proof in proofs_section.get("proofs", []):
@@ -117,8 +146,8 @@ def format_text(report: Dict[str, Any]) -> str:
         w(f"  Risk assessment: {risk}")
         w("")
 
-    # 3. Conversation attacks
-    w("[3] CONVERSATION ATTACK SUITE (Prober)")
+    # 4. Conversation attacks
+    w("[4] CONVERSATION ATTACK SUITE (Prober)")
     w("-" * 40)
     conv = report.get("conversation_attacks", {})
     for p in conv.get("prompts", []):
@@ -132,8 +161,8 @@ def format_text(report: Dict[str, Any]) -> str:
         w(f"  Attack surface: {surface}")
         w("")
 
-    # 4. Judgment
-    w("[4] JUDGMENT (Judge)")
+    # 5. Judgment
+    w("[5] JUDGMENT (Judge)")
     w("-" * 40)
     verdict = report.get("verdict", {})
     v_str = "COMPROMISED" if verdict.get("is_compromised") else "NOT COMPROMISED"

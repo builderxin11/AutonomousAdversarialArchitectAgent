@@ -21,6 +21,8 @@ import random
 import secrets
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -87,10 +89,21 @@ _request_log: List[Dict[str, Any]] = []
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    print("=" * 60)
+    print("  AAA Universal Mock Server")
+    print(f"  Chaos API Key: {CHAOS_API_KEY}")
+    print("=" * 60)
+    yield
+
+
 app = FastAPI(
     title="AAA Universal Mock Server",
     description="Programmable mock environment with hidden chaos control plane.",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 
@@ -331,19 +344,6 @@ async def inject_store_entry(body: Dict[str, Any]):
     _user_store[user_id] = body
     _log_request("INJECT", f"/_chaos/store/inject", f"poisoned {user_id}")
     return {"status": "ok", "injected": body}
-
-
-# ---------------------------------------------------------------------------
-# Startup event
-# ---------------------------------------------------------------------------
-
-
-@app.on_event("startup")
-async def _on_startup():
-    print("=" * 60)
-    print("  AAA Universal Mock Server")
-    print(f"  Chaos API Key: {CHAOS_API_KEY}")
-    print("=" * 60)
 
 
 # ---------------------------------------------------------------------------

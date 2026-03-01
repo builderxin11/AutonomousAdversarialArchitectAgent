@@ -58,6 +58,7 @@ class TestBuildJsonReport:
             "meta",
             "verdict",
             "vulnerabilities",
+            "strategic_plan",
             "exploit_proofs",
             "conversation_attacks",
             "agent_reasoning",
@@ -82,6 +83,24 @@ class TestBuildJsonReport:
         sample_state["is_compromised"] = False
         report = build_json_report(sample_state, target_file="v.py")
         assert report["verdict"]["is_compromised"] is False
+
+    def test_strategic_plan_populated(self, sample_state):
+        sample_state["attack_tree"]["strategies"] = [
+            {"strategy_id": "STRAT-001", "priority": 1}
+        ]
+        sample_state["attack_tree"]["threat_model_summary"] = "Vulnerable"
+        sample_state["attack_tree"]["prioritization_rationale"] = "High severity"
+        report = build_json_report(sample_state, target_file="v.py")
+        plan = report["strategic_plan"]
+        assert len(plan["strategies"]) == 1
+        assert plan["threat_model_summary"] == "Vulnerable"
+        assert plan["prioritization_rationale"] == "High severity"
+
+    def test_strategic_plan_empty(self):
+        report = build_json_report({}, target_file="v.py")
+        plan = report["strategic_plan"]
+        assert plan["strategies"] == []
+        assert plan["threat_model_summary"] is None
 
 
 # ---- format_json ----
@@ -110,12 +129,38 @@ class TestFormatText:
         assert "[2]" in text
         assert "[3]" in text
         assert "[4]" in text
+        assert "[5]" in text
         assert "Detailed Agent Reasoning" in text
 
     def test_compromised_label(self, sample_state):
         report = build_json_report(sample_state, target_file="v.py")
         text = format_text(report)
         assert "COMPROMISED" in text
+
+    def test_strategist_section_rendered(self, sample_state):
+        sample_state["attack_tree"]["strategies"] = [
+            {
+                "strategy_id": "STRAT-001",
+                "priority": 1,
+                "attack_surface": "environment",
+                "target_flaw_ids": ["FLAW-001"],
+                "expected_outcome": "Duplicate created",
+                "steps": [
+                    {
+                        "action": "Inject errors",
+                        "surface": "environment",
+                        "chaos_mechanism": "error_rate=1.0",
+                    }
+                ],
+            }
+        ]
+        sample_state["attack_tree"]["threat_model_summary"] = "Vulnerable target"
+        report = build_json_report(sample_state, target_file="v.py")
+        text = format_text(report)
+        assert "STRATEGIC ATTACK PLAN" in text
+        assert "STRAT-001" in text
+        assert "Inject errors" in text
+        assert "Vulnerable target" in text
 
     def test_not_compromised_label(self, sample_state):
         sample_state["is_compromised"] = False

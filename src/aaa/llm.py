@@ -25,7 +25,6 @@ Examples::
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
