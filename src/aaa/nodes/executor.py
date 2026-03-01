@@ -140,12 +140,23 @@ For EACH exploitable flaw, produce an ExploitProof containing:
 
 Focus on the most severe flaws first.  Be concrete and cite line numbers
 and function names from the Auditor's findings.
+
+## Strategic Plan from Strategist
+The Strategist has produced a prioritized attack plan using Tree-of-Thought
+reasoning.  Use this plan to focus your proof-of-exploitability work on the
+highest-priority strategies first.  Align your exploit proofs with the
+strategy steps where possible.
+
+```json
+{strategies_json}
+```
 """
 
 
 def _build_exploit_proofs(
     logic_flaws: List[Dict],
     target_metadata: Dict[str, Any],
+    strategies: List[Dict] | None = None,
 ) -> ExecutorReport:
     """Use LLM to map flaws to provable environmental conditions."""
     llm = get_llm()
@@ -157,6 +168,7 @@ def _build_exploit_proofs(
         tool_schemas_json=json.dumps(
             target_metadata.get("tool_schemas", []), indent=2, default=str
         ),
+        strategies_json=json.dumps(strategies or [], indent=2, default=str),
     )
 
     return structured_llm.invoke(prompt)
@@ -242,15 +254,18 @@ async def executor_node(state: TripleAState) -> dict:
 
     logic_flaws = state.get("logic_flaws", [])
     target_metadata = state.get("target_metadata", {})
+    existing_attack_tree = state.get("attack_tree", {})
+    strategies = existing_attack_tree.get("strategies", [])
 
-    # Phase 1: LLM maps flaws to provable conditions
-    report = _build_exploit_proofs(logic_flaws, target_metadata)
+    # Phase 1: LLM maps flaws to provable conditions (informed by Strategist)
+    report = _build_exploit_proofs(logic_flaws, target_metadata, strategies)
 
     # Phase 2: Verify conditions against Mock Server
     evidence = await _verify_conditions(report, app, CHAOS_API_KEY)
 
-    # Build attack_tree (structured output for the Judge)
+    # Build attack_tree (merge Strategist strategies with Executor proofs)
     attack_tree = {
+        **existing_attack_tree,
         "proofs": [p.model_dump() for p in report.proofs],
         "overall_risk_assessment": report.overall_risk_assessment,
         "verification_evidence": evidence,
