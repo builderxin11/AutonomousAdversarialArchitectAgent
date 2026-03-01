@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aaa"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-anthropic",
+    "langchain-aws",
+    "pydantic",
+    "fastapi",
+    "uvicorn",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aaa"]
