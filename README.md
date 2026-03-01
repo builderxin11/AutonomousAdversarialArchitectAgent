@@ -12,6 +12,7 @@ AI agents are being deployed to manage financial transactions, control infrastru
 - **Multi-file directory scanning** — Scan entire projects with cross-file import graph analysis to detect inter-module trust boundary violations
 - **Incremental caching** — Content-hash based AST cache skips unchanged files across repeated scans
 - **MCP Tool Schema Poisoning detection** — Scans tool descriptions for hidden instructions, exfiltration URLs, sensitive data references, and safety overrides using deterministic regex patterns + LLM semantic analysis
+- **Live MCP Server scanning** — Connect to any MCP server you use (stdio or SSE), pull tool schemas via `tools/list`, and run poisoning detection — no source code needed
 - **Dual attack surface** — Tests both environment manipulation (API errors, data poisoning) and conversation injection (prompt attacks)
 - **Tree-of-Thought planning** — The Strategist uses multi-path reasoning to generate prioritized, multi-step attack chains
 - **State-level verdicts** — The Judge evaluates exploit chains at the data layer, not by chat output, producing drift scores and invariant violation metrics
@@ -199,6 +200,30 @@ aaa scan examples/poisoned_tools.py
 
 AAA's Auditor detects these via two layers: fast regex pattern matching (action directives, URLs, sensitive data references) and LLM semantic analysis (implicit behavioral instructions, description-to-code mismatch).
 
+## Scanning Any MCP Server
+
+`aaa scan-mcp` connects to any MCP server as a client, pulls all tool schemas via `tools/list`, and runs poisoning detection on the descriptions. No source code needed — if the server speaks MCP, you can scan it.
+
+```bash
+# Scan any third-party MCP server you use
+aaa scan-mcp npx -y @modelcontextprotocol/server-filesystem /tmp
+aaa scan-mcp npx -y @modelcontextprotocol/server-github
+aaa scan-mcp python path/to/any_server.py
+aaa scan-mcp node some-community-server.js
+
+# SSE servers
+aaa scan-mcp http://localhost:8000/sse
+
+# Fast mode — regex only, no LLM key required
+aaa scan-mcp --fast npx -y @modelcontextprotocol/server-filesystem /tmp
+```
+
+Transport is auto-detected (`http://` → SSE, everything else → stdio). The `--fast` flag runs regex-only detection without needing an LLM backend, so you can scan a server in seconds with zero configuration.
+
+**What this scans:** Tool descriptions returned by `tools/list` — hidden action directives, exfiltration URLs, sensitive data references, safety overrides, and unauthorized tool chaining. **What this does not do:** It does not call any tools, does not test agent behavior, and does not require the server's source code.
+
+The included [`examples/poisoned_mcp_server.py`](examples/poisoned_mcp_server.py) provides a deliberately poisoned MCP server for testing and development.
+
 ## Quick Start
 
 ### Installation
@@ -233,6 +258,12 @@ aaa scan examples/financial_agent.py
 
 # JSON report to file
 aaa scan examples/financial_agent.py --format json -o report.json
+
+# Scan a live MCP server (no source code needed)
+aaa scan-mcp npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# Regex-only, no LLM required
+aaa scan-mcp --fast npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
 Exit codes: `0` = not compromised, `1` = compromised, `2` = input error.
@@ -298,10 +329,11 @@ pytest tests/test_strategist.py -v
 ```
 src/aaa/
   cache.py            # Content-hash AST cache for incremental scanning
-  cli.py              # CLI entry point (aaa scan <file|dir>)
+  cli.py              # CLI entry point (aaa scan, aaa scan-mcp)
   graph.py            # LangGraph pipeline with parallel Executor/Prober fan-out
   llm.py              # Centralized LLM factory (Bedrock / Anthropic)
   mcp.py              # MCP Tool Schema Poisoning detector (regex + LLM)
+  mcp_client.py       # Live MCP Server scanner (connect, fetch schemas, scan)
   report.py           # JSON and text report generation
   state.py            # TripleAState shared schema with LangGraph reducers
   env/
@@ -317,6 +349,7 @@ examples/
   victim_service.py   # Simple CRUD agent with uniqueness-bypass flaw
   financial_agent.py  # Realistic financial agent with 5 vulnerability classes
   poisoned_tools.py   # Document agent with 2 poisoned tool descriptions
+  poisoned_mcp_server.py  # MCP server with 2 poisoned tool schemas (for scan-mcp testing)
 
 tests/                # Unit + integration tests
 ```

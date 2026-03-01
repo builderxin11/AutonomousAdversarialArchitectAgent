@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from aaa.cli import _build_parser, _run_scan_async
+from aaa.cli import _build_parser, _detect_transport, _run_scan_async, _run_scan_mcp_async
 
 
 # ---- _build_parser ----
@@ -149,3 +149,131 @@ class TestRunScanAsync:
     async def test_empty_directory(self, tmp_path: pathlib.Path):
         code = await _run_scan_async(str(tmp_path), "text", None)
         assert code == 2
+
+
+# ---- scan-mcp parser ----
+
+
+class TestScanMcpParser:
+    def test_scan_mcp_minimal(self):
+        parser = _build_parser()
+        args = parser.parse_args(["scan-mcp", "http://localhost:8000/sse"])
+        assert args.command == "scan-mcp"
+        assert args.target == "http://localhost:8000/sse"
+        assert args.server_args == []
+        assert args.transport is None
+        assert args.fast is False
+        assert args.fmt == "text"
+        assert args.output is None
+        assert args.timeout == 30.0
+
+    def test_scan_mcp_full(self):
+        parser = _build_parser()
+        args = parser.parse_args([
+            "scan-mcp", "python", "server.py",
+            "--transport", "stdio",
+            "--fast",
+            "--format", "json",
+            "-o", "report.json",
+            "--timeout", "60",
+        ])
+        assert args.target == "python"
+        assert args.server_args == ["server.py"]
+        assert args.transport == "stdio"
+        assert args.fast is True
+        assert args.fmt == "json"
+        assert args.output == "report.json"
+        assert args.timeout == 60.0
+
+    def test_scan_mcp_transport_choices(self):
+        parser = _build_parser()
+        args = parser.parse_args(["scan-mcp", "x", "-t", "sse"])
+        assert args.transport == "sse"
+        args = parser.parse_args(["scan-mcp", "x", "-t", "stdio"])
+        assert args.transport == "stdio"
+
+
+# ---- Transport auto-detection ----
+
+
+class TestTransportAutoDetection:
+    def test_http_url_detected_as_sse(self):
+        assert _detect_transport("http://localhost:8000/sse") == "sse"
+
+    def test_https_url_detected_as_sse(self):
+        assert _detect_transport("https://example.com/mcp") == "sse"
+
+    def test_command_detected_as_stdio(self):
+        assert _detect_transport("python") == "stdio"
+
+    def test_path_detected_as_stdio(self):
+        assert _detect_transport("./my_server.py") == "stdio"
+
+
+# ---- _run_scan_mcp_async ----
+
+
+class TestRunScanMcpAsync:
+    async def test_clean_server_returns_0(self):
+        report = {
+            "summary": {"critical_findings": 0, "high_findings": 0},
+            "meta": {},
+            "tools": [],
+            "findings": [],
+            "llm_findings": [],
+        }
+        with patch("aaa.cli.scan_mcp_server", return_value=report):
+            code = await _run_scan_mcp_async(
+                "http://localhost:8000/sse", [], None, "text", None, fast=True,
+            )
+        assert code == 0
+
+    async def test_poisoned_server_returns_1(self):
+        report = {
+            "summary": {"critical_findings": 2, "high_findings": 1},
+            "meta": {},
+            "tools": [],
+            "findings": [],
+            "llm_findings": [],
+        }
+        with patch("aaa.cli.scan_mcp_server", return_value=report):
+            code = await _run_scan_mcp_async(
+                "python", ["server.py"], "stdio", "text", None, fast=True,
+            )
+        assert code == 1
+
+    async def test_json_format_output(self, tmp_path: pathlib.Path):
+        report = {
+            "summary": {"critical_findings": 0, "high_findings": 0},
+            "meta": {"scan_type": "mcp_server"},
+            "tools": [],
+            "findings": [],
+            "llm_findings": [],
+        }
+        output = tmp_path / "report.json"
+        with patch("aaa.cli.scan_mcp_server", return_value=report):
+            code = await _run_scan_mcp_async(
+                "http://localhost/sse", [], None, "json", str(output), fast=True,
+            )
+        assert code == 0
+        data = json.loads(output.read_text())
+        assert data["meta"]["scan_type"] == "mcp_server"
+
+    async def test_text_format_output(self, tmp_path: pathlib.Path):
+        report = {
+            "summary": {"critical_findings": 0, "high_findings": 0, "total_tools": 0,
+                        "clean_tools": 0, "poisoned_tools": 0, "medium_findings": 0,
+                        "risk_level": "clean"},
+            "meta": {"transport": "sse", "target": "http://localhost/sse", "tools_scanned": 0},
+            "tools": [],
+            "findings": [],
+            "llm_findings": [],
+        }
+        output = tmp_path / "report.txt"
+        with patch("aaa.cli.scan_mcp_server", return_value=report):
+            code = await _run_scan_mcp_async(
+                "http://localhost/sse", [], None, "text", str(output), fast=True,
+            )
+        assert code == 0
+        text = output.read_text()
+        assert "AAA MCP Server Scan Report" in text

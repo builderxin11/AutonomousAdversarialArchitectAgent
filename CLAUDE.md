@@ -102,5 +102,5 @@ class TripleAState(TypedDict):
 - [x] **Phase 7**: Incremental scanning via content-hash AST cache.
 - [x] **Phase 8**: MCP Tool Schema Poisoning detection.
 - [ ] **Phase 9**: tree-sitter integration for multi-language support.
-- [ ] **Phase 10**: Live MCP Server scanning — connect as MCP client, pull tool schemas via `tools/list`, run poisoning detection without source code.
+- [x] **Phase 10**: Live MCP Server scanning — connect as MCP client, pull tool schemas via `tools/list`, run poisoning detection without source code.
 - [ ] **Phase 11**: Executor live verification — spin up Mock Server + victim agent, execute actual attacks, compare real state vs expected state.
