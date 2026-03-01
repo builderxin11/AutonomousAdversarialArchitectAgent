@@ -1,13 +1,17 @@
-"""AAA Red-Team Graph — Auditor -> Strategist -> Executor -> Prober -> Judge pipeline.
+"""AAA Red-Team Graph — parallel fan-out/fan-in pipeline.
 
 Wires the five core nodes into a LangGraph StateGraph.  The graph accepts
 a ``TripleAState`` with ``target_metadata.source_code`` populated and runs:
 
 1. **Auditor** — static analysis of the victim's source code
 2. **Strategist** — Tree-of-Thought attack planning and prioritization
-3. **Executor** — proves identified flaws are exploitable via environment
-4. **Prober** — generates adversarial conversation prompts
-5. **Judge** — logical chain evaluation across both attack surfaces
+3. **Executor** ⇅ **Prober** — run in parallel (fan-out from Strategist)
+   - Executor proves identified flaws are exploitable via environment
+   - Prober generates adversarial conversation prompts
+4. **Judge** — logical chain evaluation across both attack surfaces (fan-in)
+
+State reducers on ``victim_logs`` (list concat) and ``env_snapshot``
+(shallow dict merge) allow LangGraph to auto-merge the parallel outputs.
 
 Usage::
 
@@ -33,7 +37,7 @@ from aaa.state import TripleAState
 
 
 def build_aaa_graph() -> StateGraph:
-    """Construct and compile the Auditor -> Strategist -> Executor -> Prober -> Judge pipeline."""
+    """Construct and compile the AAA pipeline with parallel Executor/Prober."""
     graph = StateGraph(TripleAState)
 
     graph.add_node("auditor", auditor_node)
@@ -44,9 +48,18 @@ def build_aaa_graph() -> StateGraph:
 
     graph.set_entry_point("auditor")
     graph.add_edge("auditor", "strategist")
-    graph.add_edge("strategist", "executor")
-    graph.add_edge("executor", "prober")
+
+    # Fan-out: Strategist -> [Executor, Prober] in parallel
+    graph.add_conditional_edges(
+        "strategist",
+        lambda state: ["executor", "prober"],
+        ["executor", "prober"],
+    )
+
+    # Fan-in: both converge on Judge
+    graph.add_edge("executor", "judge")
     graph.add_edge("prober", "judge")
+
     graph.add_edge("judge", END)
 
     return graph.compile()

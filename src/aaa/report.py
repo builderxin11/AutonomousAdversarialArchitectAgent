@@ -33,22 +33,36 @@ def _serialize_internal_thought(messages: list) -> List[Dict[str, str]]:
 # Report builder
 # ---------------------------------------------------------------------------
 
-def build_json_report(state: TripleAState, target_file: str) -> Dict[str, Any]:
+def build_json_report(
+    state: TripleAState,
+    target_file: str = "",
+    *,
+    target: str = "",
+) -> Dict[str, Any]:
     """Build the canonical report dict from final pipeline state.
 
     The ``target_metadata`` raw source is intentionally excluded — the
     consumer already has the file.
+
+    Accepts ``target`` (preferred) or ``target_file`` for backward compat.
     """
+    target_label = target or target_file
     metrics = state.get("eval_metrics", {})
     tree = state.get("attack_tree", {})
     conv_suite = state.get("env_snapshot", {}).get("conversation_attack_suite", {})
+    meta = state.get("target_metadata", {})
+    files_scanned = meta.get("files_scanned")
+
+    meta_section: Dict[str, Any] = {
+        "aaa_version": AAA_VERSION,
+        "target_file": target_label,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if files_scanned is not None:
+        meta_section["files_scanned"] = files_scanned
 
     return {
-        "meta": {
-            "aaa_version": AAA_VERSION,
-            "target_file": target_file,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
+        "meta": meta_section,
         "verdict": {
             "is_compromised": state.get("is_compromised", False),
             "drift_score": metrics.get("drift_score"),
@@ -95,13 +109,21 @@ def format_text(report: Dict[str, Any]) -> str:
     w("  AAA Security Audit Report")
     w("=" * 60)
 
+    meta = report.get("meta", {})
+    w(f"  Target: {meta.get('target_file', 'N/A')}")
+    files_scanned = meta.get("files_scanned")
+    if files_scanned is not None:
+        w(f"  Files scanned: {files_scanned}")
+
     # 1. Vulnerabilities
     w("\n[1] VULNERABILITY ANALYSIS (Auditor)")
     w("-" * 40)
     for flaw in report.get("vulnerabilities", []):
-        w(f"  [{flaw.get('severity', 'unknown').upper()}] {flaw.get('flaw_id', 'N/A')}")
+        cross_tag = "[CROSS-FILE] " if flaw.get("cross_file") else ""
+        w(f"  {cross_tag}[{flaw.get('severity', 'unknown').upper()}] {flaw.get('flaw_id', 'N/A')}")
         w(f"    {flaw.get('description', '')}")
-        w(f"    Function: {flaw.get('function', 'N/A')} | Line: {flaw.get('line', 'N/A')}")
+        file_info = f"File: {flaw['file']} | " if flaw.get("file") else ""
+        w(f"    {file_info}Function: {flaw.get('function', 'N/A')} | Line: {flaw.get('line', 'N/A')}")
         w("")
 
     # 2. Strategic plan

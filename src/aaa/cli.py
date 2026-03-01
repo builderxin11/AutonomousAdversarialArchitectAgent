@@ -18,6 +18,7 @@ import pathlib
 import sys
 from typing import Optional, Sequence
 
+from aaa.cache import get_cache_dir
 from aaa.graph import build_aaa_graph
 from aaa.report import build_json_report, format_json, format_text
 from aaa.state import TripleAState
@@ -45,28 +46,79 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write report to PATH instead of stdout.",
     )
+    scan.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable the content-hash AST cache.",
+    )
+    scan.add_argument(
+        "--glob",
+        type=str,
+        default=None,
+        dest="glob_pattern",
+        help="Glob pattern for directory scanning (default: '**/*.py').",
+    )
     return parser
 
 
-async def _run_scan_async(target: str, fmt: str, output: Optional[str]) -> int:
-    target_path = pathlib.Path(target)
-    if not target_path.is_file():
-        print(f"Error: target file not found: {target}", file=sys.stderr)
+async def _run_scan_async(
+    target: str,
+    fmt: str,
+    output: Optional[str],
+    *,
+    no_cache: bool = False,
+    glob_pattern: Optional[str] = None,
+) -> int:
+    target_path = pathlib.Path(target).resolve()
+    if not target_path.exists():
+        print(f"Error: target not found: {target}", file=sys.stderr)
         return 2
 
-    source = target_path.read_text()
+    cache_dir = None if no_cache else str(get_cache_dir(target_path))
 
-    initial_state: TripleAState = {
-        "target_metadata": {"source_code": source},
-        "logic_flaws": [],
-        "hypotheses": [],
-        "attack_tree": {},
-        "internal_thought": [],
-        "victim_logs": [],
-        "env_snapshot": {},
-        "eval_metrics": {},
-        "is_compromised": False,
-    }
+    if target_path.is_dir():
+        # Multi-file mode
+        from aaa.nodes.auditor import _collect_files
+
+        files = _collect_files(target_path, glob_pattern)
+        if not files:
+            print(f"Error: no Python files found in {target}", file=sys.stderr)
+            return 2
+
+        initial_state: TripleAState = {
+            "target_metadata": {
+                "source_code": "",
+                "files": files,
+                "cache_dir": cache_dir,
+            },
+            "logic_flaws": [],
+            "hypotheses": [],
+            "attack_tree": {},
+            "internal_thought": [],
+            "victim_logs": [],
+            "env_snapshot": {},
+            "eval_metrics": {},
+            "is_compromised": False,
+        }
+    else:
+        # Single-file mode (backward-compatible)
+        source = target_path.read_text()
+
+        initial_state = {
+            "target_metadata": {
+                "source_code": source,
+                "cache_dir": cache_dir,
+            },
+            "logic_flaws": [],
+            "hypotheses": [],
+            "attack_tree": {},
+            "internal_thought": [],
+            "victim_logs": [],
+            "env_snapshot": {},
+            "eval_metrics": {},
+            "is_compromised": False,
+        }
 
     graph = build_aaa_graph()
     result = await graph.ainvoke(initial_state)
@@ -82,8 +134,17 @@ async def _run_scan_async(target: str, fmt: str, output: Optional[str]) -> int:
     return 1 if result.get("is_compromised") else 0
 
 
-def _run_scan(target: str, fmt: str, output: Optional[str]) -> int:
-    return asyncio.run(_run_scan_async(target, fmt, output))
+def _run_scan(
+    target: str,
+    fmt: str,
+    output: Optional[str],
+    *,
+    no_cache: bool = False,
+    glob_pattern: Optional[str] = None,
+) -> int:
+    return asyncio.run(
+        _run_scan_async(target, fmt, output, no_cache=no_cache, glob_pattern=glob_pattern)
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -95,5 +156,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(2)
 
     if args.command == "scan":
-        code = _run_scan(args.target, args.fmt, args.output)
+        code = _run_scan(
+            args.target,
+            args.fmt,
+            args.output,
+            no_cache=args.no_cache,
+            glob_pattern=getattr(args, "glob_pattern", None),
+        )
         sys.exit(code)

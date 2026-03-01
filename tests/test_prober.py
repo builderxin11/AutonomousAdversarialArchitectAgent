@@ -81,7 +81,8 @@ class TestProberNodeOutput:
         assert "information_extraction" in hypotheses[1]
 
     @patch("aaa.nodes.prober._generate_attack_suite", return_value=_fake_suite())
-    def test_victim_logs_merged_with_existing(self, mock_gen):
+    def test_victim_logs_only_prober_data(self, mock_gen):
+        """Prober returns only its own logs — LangGraph reducers handle merging."""
         existing_logs = ["[HIGH] FLAW-001: guard bypass"]
         state = _make_state(
             logic_flaws=[{"flaw_id": "FLAW-001"}],
@@ -90,10 +91,8 @@ class TestProberNodeOutput:
         result = prober_node(state)
 
         logs = result["victim_logs"]
-        # Existing logs preserved
-        assert logs[0] == "[HIGH] FLAW-001: guard bypass"
-        # Separator added
-        assert "=== CONVERSATION ATTACK PROBES ===" in logs
+        # Prober no longer includes executor's logs (reducer merges them)
+        assert logs[0] == "=== CONVERSATION ATTACK PROBES ==="
         # Prompt entries present
         assert any("Adversarial Prompt #1" in entry for entry in logs)
         assert any("direct_injection" in entry for entry in logs)
@@ -111,7 +110,8 @@ class TestProberNodeOutput:
         assert suite["prompts"][0]["attack_type"] == "direct_injection"
 
     @patch("aaa.nodes.prober._generate_attack_suite", return_value=_fake_suite())
-    def test_env_snapshot_preserves_existing(self, mock_gen):
+    def test_env_snapshot_only_prober_data(self, mock_gen):
+        """Prober returns only its own snapshot — LangGraph reducers handle merging."""
         existing_snap = {"mock_server_capabilities_confirmed": True}
         state = _make_state(
             logic_flaws=[{"flaw_id": "FLAW-001"}],
@@ -120,7 +120,8 @@ class TestProberNodeOutput:
         result = prober_node(state)
 
         snap = result["env_snapshot"]
-        assert snap["mock_server_capabilities_confirmed"] is True
+        # Prober no longer includes executor's keys (reducer merges them)
+        assert "mock_server_capabilities_confirmed" not in snap
         assert "conversation_attack_suite" in snap
 
     @patch("aaa.nodes.prober._generate_attack_suite", return_value=_fake_suite())

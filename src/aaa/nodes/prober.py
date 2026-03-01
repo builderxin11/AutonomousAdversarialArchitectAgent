@@ -226,16 +226,14 @@ def prober_node(state: TripleAState) -> dict:
             f"{p.predicted_behavior[:80]}..."
         )
 
-    # Merge with existing victim_logs from Executor
-    existing_logs = list(state.get("victim_logs", []))
-    existing_logs.append("=== CONVERSATION ATTACK PROBES ===")
-    existing_logs.extend(probe_logs)
+    # Return only this node's new data — LangGraph reducers handle merging
+    new_logs = ["=== CONVERSATION ATTACK PROBES ==="]
+    new_logs.extend(probe_logs)
 
     return {
         "hypotheses": hypotheses,
-        "victim_logs": existing_logs,
+        "victim_logs": new_logs,
         "env_snapshot": {
-            **state.get("env_snapshot", {}),
             "conversation_attack_suite": {
                 "prompts": [p.model_dump() for p in suite.prompts],
                 "attack_surface_summary": suite.attack_surface_summary,

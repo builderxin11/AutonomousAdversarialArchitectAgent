@@ -7,3 +7,4 @@ build/
 *.egg
 .claude/
 .pytest_cache/
+.aaa_cache/

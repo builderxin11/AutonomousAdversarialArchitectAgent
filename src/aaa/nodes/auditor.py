@@ -19,11 +19,13 @@ from __future__ import annotations
 import ast
 import json
 import textwrap
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
+from aaa.cache import content_hash, load_cached, store_cached
 from aaa.llm import get_llm
 from aaa.state import TripleAState
 
@@ -57,6 +59,14 @@ class LogicFlaw(BaseModel):
     )
     exploitation_vector: str = Field(
         description="Concrete scenario describing how an attacker could exploit this"
+    )
+    file: Optional[str] = Field(
+        default=None,
+        description="File path where the flaw was found (multi-file mode)",
+    )
+    cross_file: bool = Field(
+        default=False,
+        description="True if this flaw spans multiple files",
     )
 
 
@@ -225,38 +235,232 @@ def _analyze_with_llm(
 
 
 # ---------------------------------------------------------------------------
+# 2b. Cached analysis wrapper
+# ---------------------------------------------------------------------------
+
+
+def _analyze_file_cached(
+    source_code: str,
+    cache_dir: Optional[Path],
+) -> tuple[Dict[str, Any], List[Dict]]:
+    """Extract metadata + run LLM analysis, with optional content-hash cache.
+
+    Returns ``(extracted_metadata, flaws)``.
+    """
+    if cache_dir is not None:
+        h = content_hash(source_code)
+        cached = load_cached(cache_dir, h)
+        if cached is not None:
+            return cached
+
+    extracted = _extract_source_metadata(source_code)
+    flaws = _analyze_with_llm(extracted, source_code)
+
+    if cache_dir is not None:
+        store_cached(cache_dir, h, extracted, flaws)
+
+    return extracted, flaws
+
+
+# ---------------------------------------------------------------------------
+# 2c. Multi-file collection and import graph
+# ---------------------------------------------------------------------------
+
+
+def _collect_files(
+    target_path: Path, glob_pattern: Optional[str] = None
+) -> Dict[str, str]:
+    """Collect Python source files from *target_path*.
+
+    - If *target_path* is a file, return ``{resolved_path: source}``.
+    - If it's a directory, glob for ``**/*.py`` (or *glob_pattern*),
+      skipping ``__pycache__`` and dot-prefixed dirs/files.
+    """
+    target_path = target_path.resolve()
+
+    if target_path.is_file():
+        return {str(target_path): target_path.read_text(encoding="utf-8")}
+
+    pattern = glob_pattern or "**/*.py"
+    files: Dict[str, str] = {}
+    for p in sorted(target_path.glob(pattern)):
+        # Skip __pycache__ and hidden dirs/files
+        parts = p.relative_to(target_path).parts
+        if any(part.startswith(".") or part == "__pycache__" for part in parts):
+            continue
+        if p.is_file():
+            files[str(p)] = p.read_text(encoding="utf-8")
+    return files
+
+
+def _build_import_graph(files: Dict[str, str]) -> Dict[str, List[str]]:
+    """Build an import dependency graph from the scanned file set.
+
+    Returns ``{filepath: [imported_filepath, ...]}``.  Only resolves imports
+    to files within the scanned set.
+    """
+    # Build module-stem -> filepath lookup
+    stem_to_path: Dict[str, str] = {}
+    for filepath in files:
+        stem = Path(filepath).stem
+        # Prefer shorter paths on collision (closer to root)
+        if stem not in stem_to_path or len(filepath) < len(stem_to_path[stem]):
+            stem_to_path[stem] = filepath
+
+    graph: Dict[str, List[str]] = {}
+
+    for filepath, source in files.items():
+        imports: List[str] = []
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            graph[filepath] = []
+            continue
+
+        for node in ast.walk(tree):
+            module_names: List[str] = []
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_names.append(alias.name.split(".")[-1])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                module_names.append(node.module.split(".")[-1])
+
+            for mod in module_names:
+                resolved = stem_to_path.get(mod)
+                if resolved and resolved != filepath:
+                    imports.append(resolved)
+
+        graph[filepath] = sorted(set(imports))
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# 2d. Cross-file analysis
+# ---------------------------------------------------------------------------
+
+
+def _build_concatenated_source(files: Dict[str, str]) -> str:
+    """Join all files with ``# === FILE: path ===`` markers."""
+    parts = []
+    for filepath, source in files.items():
+        parts.append(f"# === FILE: {filepath} ===")
+        parts.append(source)
+    return "\n\n".join(parts)
+
+
+_CROSS_FILE_PROMPT = textwrap.dedent("""\
+    You are a senior security auditor specializing in AI agent vulnerabilities.
+    You are analyzing a **multi-file** Python codebase for an AI agent and must
+    identify **cross-file** logic flaws that are only visible when considering
+    how modules interact with each other.
+
+    ## Import Dependency Graph
+    ```json
+    {import_graph_json}
+    ```
+
+    ## Per-file Metadata Summary
+    ```json
+    {per_file_metadata_json}
+    ```
+
+    ## Full Concatenated Source
+    ```python
+    {concatenated_source}
+    ```
+
+    ## Cross-file Flaw Categories
+    1. **trust_boundary_violation** — Module A trusts data from Module B without
+       validation, but Module B's data can be influenced by external input.
+    2. **shared_mutable_state** — Global variables or singleton objects mutated
+       by one module and read by another without synchronization.
+    3. **import_chain_propagation** — A vulnerability in a low-level utility
+       propagates to all importers (e.g., poisoned config, unsafe defaults).
+    4. **configuration_drift** — Different modules assume different values for
+       the same configuration (hardcoded vs. env-var vs. default).
+
+    Only report flaws that require **multi-file context** to detect — do NOT
+    repeat single-file flaws.  For each flaw, provide:
+    - ``flaw_id``: e.g. XFLAW-001
+    - ``type``: one of the categories above or 'other'
+    - ``severity``: critical / high / medium / low
+    - ``function``: primary function involved (or null)
+    - ``line``: approximate line in the primary file
+    - ``description``: clear explanation referencing both files
+    - ``trust_assumption``: the cross-module trust that is violated
+    - ``exploitation_vector``: concrete multi-file attack scenario
+    - ``file``: primary file path
+    - ``cross_file``: always true
+""")
+
+
+class CrossFileAuditResult(BaseModel):
+    """Container for cross-file logic flaws."""
+
+    flaws: List[LogicFlaw] = Field(default_factory=list)
+
+
+def _analyze_cross_file(
+    per_file_metadata: Dict[str, Dict[str, Any]],
+    import_graph: Dict[str, List[str]],
+    concatenated_source: str,
+) -> List[Dict]:
+    """Run LLM analysis for cross-file vulnerabilities.
+
+    Returns a list of flaw dicts with ``cross_file=True``.
+    """
+    if len(per_file_metadata) < 2:
+        return []
+
+    llm = get_llm()
+    structured_llm = llm.with_structured_output(CrossFileAuditResult)
+
+    # Summarize per-file metadata (omit raw source to save tokens)
+    summary = {}
+    for fp, meta in per_file_metadata.items():
+        summary[fp] = {
+            "functions": [f["name"] for f in meta.get("functions", [])],
+            "globals": [g["name"] for g in meta.get("global_variables", [])],
+            "string_constants": [s["name"] for s in meta.get("string_constants", [])],
+        }
+
+    prompt_text = _CROSS_FILE_PROMPT.format(
+        import_graph_json=json.dumps(import_graph, indent=2),
+        per_file_metadata_json=json.dumps(summary, indent=2),
+        concatenated_source=concatenated_source,
+    )
+
+    result: CrossFileAuditResult = structured_llm.invoke(prompt_text)
+    flaws = []
+    for flaw in result.flaws:
+        d = flaw.model_dump()
+        d["cross_file"] = True
+        flaws.append(d)
+    return flaws
+
+
+# ---------------------------------------------------------------------------
 # 3. LangGraph Node Function
 # ---------------------------------------------------------------------------
 
 
-def auditor_node(state: TripleAState) -> dict:
-    """LangGraph node — performs static audit of the victim's source code.
-
-    Reads ``state["target_metadata"]["source_code"]``, runs AST extraction and
-    LLM analysis, then returns a state-update dict with enriched
-    ``target_metadata``, ``logic_flaws``, and an ``internal_thought`` message.
-    """
-    source_code: str = state["target_metadata"]["source_code"]
-
-    # Phase 1: deterministic AST extraction
-    metadata = _extract_source_metadata(source_code)
-
-    # Phase 2: LLM-powered flaw analysis
-    flaws = _analyze_with_llm(metadata, source_code)
-
-    # Build enriched target_metadata
-    existing_metadata = dict(state.get("target_metadata", {}))
-    existing_metadata["extracted"] = metadata
-
-    # Extract system prompt from string constants if present
-    for const in metadata["string_constants"]:
+def _enrich_system_prompt(
+    metadata: Dict[str, Any], extracted: Dict[str, Any]
+) -> None:
+    """Detect and set ``system_prompt`` from string constants in *extracted*."""
+    for const in extracted["string_constants"]:
         if "PROMPT" in const["name"].upper() or "SYSTEM" in const["name"].upper():
-            existing_metadata["system_prompt"] = const["value"]
+            metadata["system_prompt"] = const["value"]
             break
 
-    # Extract tool schemas from functions with @tool decorator
+
+def _enrich_tool_schemas(
+    metadata: Dict[str, Any], extracted: Dict[str, Any]
+) -> None:
+    """Detect and set ``tool_schemas`` from @tool-decorated functions."""
     tool_schemas = []
-    for func in metadata["functions"]:
+    for func in extracted["functions"]:
         if "tool" in func.get("decorators", []):
             tool_schemas.append(
                 {
@@ -267,9 +471,98 @@ def auditor_node(state: TripleAState) -> dict:
                 }
             )
     if tool_schemas:
-        existing_metadata["tool_schemas"] = tool_schemas
+        metadata["tool_schemas"] = tool_schemas
 
-    # Compose summary message for internal thought
+
+def auditor_node(state: TripleAState) -> dict:
+    """LangGraph node — performs static audit of the victim's source code.
+
+    Supports two modes:
+
+    - **Single-file** (default): reads ``target_metadata["source_code"]``
+    - **Multi-file**: reads ``target_metadata["files"]`` dict mapping
+      ``{path: source}`` and performs per-file + cross-file analysis.
+
+    Returns a state-update dict with enriched ``target_metadata``,
+    ``logic_flaws``, and an ``internal_thought`` message.
+    """
+    target_metadata = state["target_metadata"]
+    cache_dir_raw = target_metadata.get("cache_dir")
+    cache_dir = Path(cache_dir_raw) if cache_dir_raw else None
+
+    files: Optional[Dict[str, str]] = target_metadata.get("files")
+
+    if files is not None:
+        # --- Multi-file mode ---
+        all_flaws: List[Dict] = []
+        all_extracted: Dict[str, Dict[str, Any]] = {}
+
+        for filepath, source_code in files.items():
+            extracted, flaws = _analyze_file_cached(source_code, cache_dir)
+            # Tag each flaw with the originating file
+            for flaw in flaws:
+                flaw.setdefault("file", filepath)
+            all_extracted[filepath] = extracted
+            all_flaws.extend(flaws)
+
+        # Build import graph
+        import_graph = _build_import_graph(files)
+
+        # Cross-file analysis
+        concatenated = _build_concatenated_source(files)
+        cross_flaws = _analyze_cross_file(all_extracted, import_graph, concatenated)
+        all_flaws.extend(cross_flaws)
+
+        # Merge extracted metadata — pick the "first" file for system prompt / tool enrichment
+        merged_extracted: Dict[str, Any] = {
+            "functions": [],
+            "global_variables": [],
+            "string_constants": [],
+        }
+        for ext in all_extracted.values():
+            for key in merged_extracted:
+                merged_extracted[key].extend(ext.get(key, []))
+
+        existing_metadata = dict(target_metadata)
+        existing_metadata["extracted"] = merged_extracted
+        existing_metadata["files_scanned"] = len(files)
+        existing_metadata["import_graph"] = import_graph
+
+        _enrich_system_prompt(existing_metadata, merged_extracted)
+        _enrich_tool_schemas(existing_metadata, merged_extracted)
+
+        flaw_summary_lines = [
+            f"Audit complete. Scanned {len(files)} file(s), "
+            f"found {len(all_flaws)} logic flaw(s) "
+            f"({sum(1 for f in all_flaws if f.get('cross_file'))} cross-file)."
+        ]
+        for f in all_flaws:
+            tag = "[CROSS-FILE] " if f.get("cross_file") else ""
+            file_tag = f" ({f['file']})" if f.get("file") else ""
+            flaw_summary_lines.append(
+                f"  - {tag}[{f['severity'].upper()}] {f['flaw_id']}: "
+                f"{f['description']}{file_tag}"
+            )
+
+        return {
+            "target_metadata": existing_metadata,
+            "logic_flaws": all_flaws,
+            "internal_thought": [
+                AIMessage(content="\n".join(flaw_summary_lines), name="auditor")
+            ],
+        }
+
+    # --- Single-file mode (backward-compatible) ---
+    source_code: str = target_metadata["source_code"]
+
+    metadata, flaws = _analyze_file_cached(source_code, cache_dir)
+
+    existing_metadata = dict(target_metadata)
+    existing_metadata["extracted"] = metadata
+
+    _enrich_system_prompt(existing_metadata, metadata)
+    _enrich_tool_schemas(existing_metadata, metadata)
+
     flaw_summary_lines = [f"Audit complete. Found {len(flaws)} logic flaw(s)."]
     for f in flaws:
         flaw_summary_lines.append(

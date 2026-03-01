@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 from unittest.mock import patch
 
-from aaa.nodes.auditor import _extract_source_metadata, auditor_node
+from aaa.nodes.auditor import (
+    _build_import_graph,
+    _collect_files,
+    _extract_source_metadata,
+    auditor_node,
+)
 
 
 # ---- _extract_source_metadata ----
@@ -123,3 +129,92 @@ class TestAuditorNodePostProcessing:
         assert len(schemas) == 2
         assert schemas[0]["name"] == "create_resource"
         assert schemas[1]["name"] == "delete_resource"
+
+
+# ---- _collect_files ----
+
+
+class TestCollectFiles:
+    def test_single_file(self, tmp_path: Path):
+        f = tmp_path / "agent.py"
+        f.write_text("x = 1")
+        result = _collect_files(f)
+        assert len(result) == 1
+        assert result[str(f.resolve())] == "x = 1"
+
+    def test_directory(self, tmp_path: Path):
+        (tmp_path / "a.py").write_text("a = 1")
+        (tmp_path / "b.py").write_text("b = 2")
+        result = _collect_files(tmp_path)
+        assert len(result) == 2
+
+    def test_glob_pattern(self, tmp_path: Path):
+        (tmp_path / "main.py").write_text("main")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "helper.py").write_text("helper")
+        (sub / "data.txt").write_text("not python")
+
+        result = _collect_files(tmp_path, glob_pattern="sub/*.py")
+        assert len(result) == 1
+        assert any("helper.py" in k for k in result)
+
+    def test_skips_pycache(self, tmp_path: Path):
+        (tmp_path / "good.py").write_text("ok")
+        cache = tmp_path / "__pycache__"
+        cache.mkdir()
+        (cache / "bad.pyc").write_text("nope")
+        # Also create a .py inside __pycache__ (unusual but test the skip)
+        (cache / "cached.py").write_text("cached")
+
+        result = _collect_files(tmp_path)
+        assert len(result) == 1
+        assert all("__pycache__" not in k for k in result)
+
+    def test_skips_dotfiles(self, tmp_path: Path):
+        (tmp_path / "main.py").write_text("ok")
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        (hidden / "secret.py").write_text("hidden")
+
+        result = _collect_files(tmp_path)
+        assert len(result) == 1
+
+
+# ---- _build_import_graph ----
+
+
+class TestBuildImportGraph:
+    def test_import_tracking(self):
+        files = {
+            "/src/main.py": "from helper import do_thing\nx = 1",
+            "/src/helper.py": "def do_thing(): pass",
+        }
+        graph = _build_import_graph(files)
+        assert "/src/helper.py" in graph["/src/main.py"]
+        assert graph["/src/helper.py"] == []
+
+    def test_syntax_error_handled(self):
+        files = {
+            "/src/good.py": "import bad_mod",
+            "/src/bad.py": "def (\n  broken syntax",
+        }
+        graph = _build_import_graph(files)
+        assert graph["/src/bad.py"] == []
+        # good.py imports bad_mod which doesn't match any stem in files
+        assert graph["/src/good.py"] == []
+
+    def test_import_statement(self):
+        files = {
+            "/src/app.py": "import utils",
+            "/src/utils.py": "def helper(): pass",
+        }
+        graph = _build_import_graph(files)
+        assert "/src/utils.py" in graph["/src/app.py"]
+
+    def test_no_self_import(self):
+        files = {
+            "/src/mod.py": "from mod import something",
+        }
+        graph = _build_import_graph(files)
+        assert graph["/src/mod.py"] == []

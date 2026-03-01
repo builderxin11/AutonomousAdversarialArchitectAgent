@@ -93,7 +93,12 @@ class TripleAState(TypedDict):
 ---
 
 ## 7. Project Roadmap
-- [ ] **Phase 1**: Core LangGraph scaffolding and `TripleAState` definition.
-- [ ] **Phase 2**: `StaticAuditor` development (AST-based tool and prompt extraction).
-- [ ] **Phase 3**: `UniversalMockServer` with programmable chaos endpoints.
-- [ ] **Phase 4**: Automated "Judge" implementation for state-drift detection.
+- [x] **Phase 1**: Core LangGraph scaffolding and `TripleAState` definition.
+- [x] **Phase 2**: `StaticAuditor` development (AST-based tool and prompt extraction).
+- [x] **Phase 3**: `UniversalMockServer` with programmable chaos endpoints.
+- [x] **Phase 4**: Automated "Judge" implementation for state-drift detection.
+- [x] **Phase 5**: Executor/Prober parallel fan-out with LangGraph state reducers.
+- [x] **Phase 6**: Multi-file directory scanning with cross-file import analysis.
+- [x] **Phase 7**: Incremental scanning via content-hash AST cache.
+- [ ] **Phase 8**: MCP Tool Schema Poisoning detection.
+- [ ] **Phase 9**: tree-sitter integration for multi-language support.

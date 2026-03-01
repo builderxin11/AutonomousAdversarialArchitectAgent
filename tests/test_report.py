@@ -102,6 +102,23 @@ class TestBuildJsonReport:
         assert plan["strategies"] == []
         assert plan["threat_model_summary"] is None
 
+    def test_target_kwarg(self, sample_state):
+        report = build_json_report(sample_state, target="src/")
+        assert report["meta"]["target_file"] == "src/"
+
+    def test_backward_compat_target_file(self, sample_state):
+        report = build_json_report(sample_state, target_file="old.py")
+        assert report["meta"]["target_file"] == "old.py"
+
+    def test_files_scanned_in_meta(self, sample_state):
+        sample_state["target_metadata"]["files_scanned"] = 5
+        report = build_json_report(sample_state, target_file="src/")
+        assert report["meta"]["files_scanned"] == 5
+
+    def test_files_scanned_absent_for_single_file(self, sample_state):
+        report = build_json_report(sample_state, target_file="v.py")
+        assert "files_scanned" not in report["meta"]
+
 
 # ---- format_json ----
 
@@ -167,3 +184,52 @@ class TestFormatText:
         report = build_json_report(sample_state, target_file="v.py")
         text = format_text(report)
         assert "NOT COMPROMISED" in text
+
+    def test_target_shown_in_header(self, sample_state):
+        report = build_json_report(sample_state, target_file="src/agents/")
+        text = format_text(report)
+        assert "src/agents/" in text
+
+    def test_files_scanned_shown(self, sample_state):
+        sample_state["target_metadata"]["files_scanned"] = 3
+        report = build_json_report(sample_state, target_file="src/")
+        text = format_text(report)
+        assert "Files scanned: 3" in text
+
+    def test_cross_file_tag(self, sample_state):
+        sample_state["logic_flaws"] = [
+            {
+                "flaw_id": "XFLAW-001",
+                "type": "shared_mutable_state",
+                "severity": "high",
+                "function": "init",
+                "line": 10,
+                "description": "Cross-module state issue",
+                "trust_assumption": "N/A",
+                "exploitation_vector": "N/A",
+                "file": "/src/a.py",
+                "cross_file": True,
+            }
+        ]
+        report = build_json_report(sample_state, target_file="src/")
+        text = format_text(report)
+        assert "[CROSS-FILE]" in text
+        assert "/src/a.py" in text
+
+    def test_file_path_shown_per_flaw(self, sample_state):
+        sample_state["logic_flaws"] = [
+            {
+                "flaw_id": "FLAW-001",
+                "type": "other",
+                "severity": "medium",
+                "function": "handler",
+                "line": 5,
+                "description": "An issue",
+                "trust_assumption": "N/A",
+                "exploitation_vector": "N/A",
+                "file": "/src/handler.py",
+            }
+        ]
+        report = build_json_report(sample_state, target_file="src/")
+        text = format_text(report)
+        assert "File: /src/handler.py" in text
