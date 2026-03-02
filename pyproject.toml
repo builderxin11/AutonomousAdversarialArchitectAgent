@@ -26,6 +26,7 @@ test = ["pytest", "pytest-asyncio"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["slow: marks tests as slow (may require LLM API key)"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aaa"]

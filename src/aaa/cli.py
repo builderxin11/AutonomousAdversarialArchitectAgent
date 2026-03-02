@@ -11,6 +11,9 @@ Usage::
     aaa scan-mcp python my_server.py                 # scan live MCP server (stdio)
     aaa scan-mcp --fast python my_server.py          # regex only, skip LLM
 
+    aaa test examples/financial_agent.py             # live agent testing
+    aaa test examples/financial_agent.py --scan-report scan.json
+
 Exit codes: 0 = not compromised, 1 = compromised, 2 = input error.
 """
 
@@ -27,7 +30,13 @@ import json
 from aaa.cache import get_cache_dir
 from aaa.graph import build_aaa_graph
 from aaa.mcp_client import format_mcp_report_text, scan_mcp_server
-from aaa.report import build_json_report, format_json, format_text
+from aaa.report import (
+    build_json_report,
+    build_live_report,
+    format_json,
+    format_text,
+    format_text_live,
+)
 from aaa.state import TripleAState
 
 
@@ -112,6 +121,40 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Connection timeout in seconds (default: 30).",
+    )
+
+    # ---- test ----
+    test = sub.add_parser(
+        "test",
+        help="Run live agent testing against a victim module.",
+    )
+    test.add_argument(
+        "target",
+        type=str,
+        help="Path to victim Python file with build_victim_agent().",
+    )
+    test.add_argument(
+        "--victim-model",
+        default="openai:gpt-4o-mini",
+        help="Model for the victim agent (default: openai:gpt-4o-mini).",
+    )
+    test.add_argument(
+        "--scan-report",
+        default=None,
+        help="Path to existing scan report JSON (skip re-scanning).",
+    )
+    test.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        dest="fmt",
+        help="Output format (default: text).",
+    )
+    test.add_argument(
+        "--output", "-o",
+        type=str,
+        default=None,
+        help="Write report to PATH instead of stdout.",
     )
 
     return parser
@@ -263,6 +306,66 @@ def _run_scan_mcp(args: argparse.Namespace) -> int:
     )
 
 
+# ---------------------------------------------------------------------------
+# test
+# ---------------------------------------------------------------------------
+
+
+async def _run_test_async(
+    target: str,
+    victim_model: str,
+    scan_report_path: Optional[str],
+    fmt: str,
+    output: Optional[str],
+) -> int:
+    target_path = pathlib.Path(target).resolve()
+    if not target_path.exists():
+        print(f"Error: target not found: {target}", file=sys.stderr)
+        return 2
+
+    from aaa.live.orchestrator import run_live_pipeline
+
+    scan_report = None
+    if scan_report_path:
+        rp = pathlib.Path(scan_report_path)
+        if not rp.exists():
+            print(f"Error: scan report not found: {scan_report_path}", file=sys.stderr)
+            return 2
+        scan_report = json.loads(rp.read_text(encoding="utf-8"))
+
+    try:
+        result = await run_live_pipeline(
+            str(target_path),
+            scan_report,
+            victim_model=victim_model,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    report = build_live_report(result, scan_report=result.get("scan_report"))
+    formatted = format_json(report) if fmt == "json" else format_text_live(report)
+
+    if output:
+        pathlib.Path(output).write_text(formatted, encoding="utf-8")
+    else:
+        print(formatted)
+
+    return 1 if result.get("is_compromised") else 0
+
+
+def _run_test(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _run_test_async(
+            args.target,
+            args.victim_model,
+            args.scan_report,
+            args.fmt,
+            args.output,
+        )
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -283,4 +386,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.command == "scan-mcp":
         code = _run_scan_mcp(args)
+        sys.exit(code)
+
+    if args.command == "test":
+        code = _run_test(args)
         sys.exit(code)

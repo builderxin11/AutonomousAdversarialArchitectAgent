@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from aaa.cli import _build_parser, _detect_transport, _run_scan_async, _run_scan_mcp_async
+from aaa.cli import _build_parser, _detect_transport, _run_scan_async, _run_scan_mcp_async, _run_test_async
 
 
 # ---- _build_parser ----
@@ -277,3 +277,59 @@ class TestRunScanMcpAsync:
         assert code == 0
         text = output.read_text()
         assert "AAA MCP Server Scan Report" in text
+
+
+# ---- test parser ----
+
+
+class TestTestParser:
+    def test_test_minimal(self):
+        parser = _build_parser()
+        args = parser.parse_args(["test", "agent.py"])
+        assert args.command == "test"
+        assert args.target == "agent.py"
+        assert args.victim_model == "openai:gpt-4o-mini"
+        assert args.scan_report is None
+        assert args.fmt == "text"
+        assert args.output is None
+
+    def test_test_full(self):
+        parser = _build_parser()
+        args = parser.parse_args([
+            "test", "agent.py",
+            "--victim-model", "anthropic:claude-sonnet-4-20250514",
+            "--scan-report", "scan.json",
+            "--format", "json",
+            "-o", "live_report.json",
+        ])
+        assert args.target == "agent.py"
+        assert args.victim_model == "anthropic:claude-sonnet-4-20250514"
+        assert args.scan_report == "scan.json"
+        assert args.fmt == "json"
+        assert args.output == "live_report.json"
+
+
+# ---- _run_test_async ----
+
+
+class TestRunTestAsync:
+    async def test_missing_file(self):
+        code = await _run_test_async(
+            "/nonexistent/agent.py", "openai:gpt-4o-mini", None, "text", None,
+        )
+        assert code == 2
+
+    async def test_no_build_agent(self, tmp_path: pathlib.Path):
+        no_agent = tmp_path / "no_agent.py"
+        no_agent.write_text("x = 1\n")
+        code = await _run_test_async(
+            str(no_agent), "openai:gpt-4o-mini", None, "text", None,
+        )
+        assert code == 2
+
+    async def test_missing_scan_report(self, tmp_path: pathlib.Path):
+        code = await _run_test_async(
+            "examples/financial_agent.py", "openai:gpt-4o-mini",
+            "/nonexistent/scan.json", "text", None,
+        )
+        assert code == 2

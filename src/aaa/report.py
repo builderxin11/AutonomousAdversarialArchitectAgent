@@ -100,6 +100,134 @@ def format_json(report: Dict[str, Any]) -> str:
     return json.dumps(report, indent=2, ensure_ascii=False)
 
 
+def build_live_report(
+    live_result: Dict[str, Any],
+    scan_report: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build report dict for live testing results.
+
+    Extends the scan report with live test results and judgment.
+    """
+    from datetime import datetime, timezone
+
+    report: Dict[str, Any] = {}
+
+    # Carry over scan report sections if available
+    if scan_report:
+        report.update(scan_report)
+
+    report["meta"] = report.get("meta", {})
+    report["meta"]["aaa_version"] = AAA_VERSION
+    report["meta"]["live_test_timestamp"] = datetime.now(timezone.utc).isoformat()
+    report["meta"]["test_type"] = "live_agent_test"
+
+    # Add live-specific sections
+    test_results = live_result.get("test_results", {})
+    judgment = live_result.get("judgment", {})
+
+    report["live_test_results"] = {
+        "total": test_results.get("total", 0),
+        "passed": test_results.get("passed", 0),
+        "failed": test_results.get("failed", 0),
+        "errors": test_results.get("errors", 0),
+        "results": test_results.get("results", []),
+    }
+
+    report["live_judgment"] = {
+        "is_compromised": judgment.get("is_compromised", False),
+        "drift_score": judgment.get("drift_score"),
+        "invariant_violation_index": judgment.get("invariant_violation_index"),
+        "executive_summary": judgment.get("executive_summary"),
+        "reasoning": judgment.get("reasoning"),
+    }
+
+    # Override top-level verdict with live results
+    report["verdict"] = {
+        "is_compromised": judgment.get("is_compromised", False),
+        "drift_score": judgment.get("drift_score"),
+        "invariant_violation_index": judgment.get("invariant_violation_index"),
+        "confirmed_chains": test_results.get("failed", 0),
+        "total_chains": test_results.get("total", 0),
+    }
+
+    report["test_plan"] = live_result.get("test_plan", {})
+
+    return report
+
+
+def format_text_live(report: Dict[str, Any]) -> str:
+    """Render live test report as human-readable text."""
+    lines: List[str] = []
+    w = lines.append
+
+    w("=" * 60)
+    w("  AAA Live Agent Test Report")
+    w("=" * 60)
+
+    meta = report.get("meta", {})
+    w(f"  Target: {meta.get('target_file', 'N/A')}")
+    w(f"  Test type: {meta.get('test_type', 'N/A')}")
+
+    # Scan sections (1-5) — reuse format_text logic if scan data present
+    if report.get("vulnerabilities"):
+        w("\n[1] VULNERABILITY ANALYSIS (Auditor)")
+        w("-" * 40)
+        for flaw in report.get("vulnerabilities", []):
+            cross_tag = "[CROSS-FILE] " if flaw.get("cross_file") else ""
+            schema_tag = "[SCHEMA] " if flaw.get("type") == "tool_schema_poisoning" else ""
+            w(f"  {cross_tag}{schema_tag}[{flaw.get('severity', 'unknown').upper()}] {flaw.get('flaw_id', 'N/A')}")
+            w(f"    {flaw.get('description', '')}")
+            w("")
+
+    # 6. Live test results
+    w("\n[6] LIVE TEST RESULTS (Runner)")
+    w("-" * 40)
+
+    live_results = report.get("live_test_results", {})
+    total = live_results.get("total", 0)
+    passed = live_results.get("passed", 0)
+    failed = live_results.get("failed", 0)
+    errors = live_results.get("errors", 0)
+    w(f"  Total: {total} | Exploits succeeded: {failed} | Agent defended: {passed} | Errors: {errors}")
+    w("")
+
+    for r in live_results.get("results", []):
+        status = "EXPLOITED" if r.get("invariant_violated") else "DEFENDED"
+        if r.get("error"):
+            status = "ERROR"
+        w(f"  [{status}] {r.get('test_id', 'N/A')} -> {r.get('target_flaw_id', 'N/A')}")
+
+        if r.get("error"):
+            w(f"    Error: {r['error'][:200]}")
+        else:
+            for i, resp in enumerate(r.get("agent_responses", []), 1):
+                w(f"    Response {i}: {str(resp)[:150]}...")
+            if r.get("invariant_violated"):
+                w("    State changed between before/after snapshots.")
+        w("")
+
+    # 7. Live judgment
+    w("[7] LIVE JUDGMENT (Judge)")
+    w("-" * 40)
+
+    judgment = report.get("live_judgment", {})
+    v_str = "COMPROMISED" if judgment.get("is_compromised") else "NOT COMPROMISED"
+    w(f"  Verdict:                    {v_str}")
+    w(f"  Drift score:                {judgment.get('drift_score', 'N/A')}")
+    w(f"  Invariant violation index:  {judgment.get('invariant_violation_index', 'N/A')}")
+    w(f"  Exploits confirmed:         {failed} / {total}")
+
+    summary = judgment.get("executive_summary")
+    if summary:
+        w(f"\n  Summary: {summary}")
+
+    reasoning = judgment.get("reasoning")
+    if reasoning:
+        w(f"\n  Reasoning:\n  {reasoning}")
+
+    return "\n".join(lines)
+
+
 def format_text(report: Dict[str, Any]) -> str:
     """Render *report* as human-readable text (mirrors original graph.py output)."""
     lines: List[str] = []

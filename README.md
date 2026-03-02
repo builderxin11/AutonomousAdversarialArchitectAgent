@@ -15,6 +15,7 @@ AI agents are being deployed to manage financial transactions, control infrastru
 - **Incremental caching** — Content-hash based AST cache skips unchanged files across repeated scans
 - **MCP Tool Schema Poisoning detection** — Scans tool descriptions for hidden instructions, exfiltration URLs, sensitive data references, and safety overrides using deterministic regex patterns + LLM semantic analysis
 - **Live MCP Server scanning** — Connect to any MCP server you use (stdio or SSE), pull tool schemas via `tools/list`, and run poisoning detection — no source code needed
+- **Live agent testing** — Execute real attacks against a running victim agent, compare actual state changes to predicted invariant violations, and produce evidence-based verdicts
 - **Tree-of-Thought planning** — The Strategist uses multi-path reasoning to generate prioritized, multi-step attack chains
 
 ## Architecture
@@ -79,9 +80,9 @@ flowchart TB
 
 **Two attack surfaces, in parallel.** After the Strategist plans, the Executor and Prober fan out concurrently. The Executor verifies that environmental chaos conditions (API timeouts, data poisoning, error injection) are achievable by sending real HTTP requests to the Mock Server's chaos API via in-process ASGI transport. The Prober generates adversarial conversation prompts designed to exploit the same flaws through the agent's chat interface. LangGraph state reducers auto-merge their outputs before the Judge evaluates.
 
-**Logical chain evaluation.** The Judge evaluates each exploit chain via LLM reasoning: given the Executor's verified environment conditions and the Prober's conversation attacks, would the victim agent's code actually be compromised? It traces from trigger condition through code path to invariant violation, producing a `drift_score` (overall exploitability) and `invariant_violation_index` (ratio of confirmed chains). The current evaluation is logical — the Judge reasons over code and evidence, rather than observing a running agent.
+**Logical chain evaluation.** The Judge evaluates each exploit chain via LLM reasoning: given the Executor's verified environment conditions and the Prober's conversation attacks, would the victim agent's code actually be compromised? It traces from trigger condition through code path to invariant violation, producing a `drift_score` (overall exploitability) and `invariant_violation_index` (ratio of confirmed chains).
 
-> **Roadmap: Live agent testing.** The Mock Server is designed to serve as a drop-in fake backend for victim agents. Phase 11 will close the loop: start the victim agent against the Mock Server, execute the attack tree in real time, and have the Judge compare actual agent state against expected business logic. See [CLAUDE.md](CLAUDE.md) for the full roadmap.
+**Live agent testing.** `aaa test` closes the loop: it imports the victim module, discovers its capabilities (injectors, state getters, tools, system prompt), generates a concrete test plan from the scan report, builds and runs the agent, executes the planned attacks, and compares real state changes against predicted invariant violations. The Live Judge then produces an evidence-based verdict comparing what the scan predicted to what actually happened. Currently limited to in-process agents with in-memory state — see [`docs/distributed-agent-testing.md`](docs/distributed-agent-testing.md) for the path toward testing distributed agents.
 
 ## Example: Scanning a Financial Agent
 
@@ -270,6 +271,27 @@ aaa scan-mcp --fast npx -y @modelcontextprotocol/server-filesystem /tmp
 
 Exit codes: `0` = not compromised, `1` = compromised, `2` = input error.
 
+### Live Agent Testing
+
+```bash
+# Run live tests against a victim agent (runs scan + test pipeline)
+aaa test examples/financial_agent.py
+
+# Use a custom model for the victim agent
+aaa test examples/financial_agent.py --victim-model anthropic:claude-sonnet-4-20250514
+
+# Skip re-scanning by providing an existing scan report
+aaa scan examples/financial_agent.py --format json -o scan.json
+aaa test examples/financial_agent.py --scan-report scan.json
+
+# JSON output
+aaa test examples/financial_agent.py --format json -o live_report.json
+```
+
+Live testing imports the victim module, discovers its capabilities (`build_victim_agent`, `reset`, `get_*`, `inject_*`), generates a test plan from the scan report, executes attacks against the running agent, and compares real state changes to predicted invariant violations.
+
+**Limitation:** `aaa test` currently runs the victim agent **in the same Python process** as AAA. This works for agents with in-memory state (like the included examples) but does not support agents deployed as remote services, agents with database-backed state, or multi-service architectures. It is designed for development-time validation — confirming that `aaa scan` findings are real exploits before you deploy. See [`docs/distributed-agent-testing.md`](docs/distributed-agent-testing.md) for design notes on extending live testing to distributed agents.
+
 ### Scan a Directory
 
 ```bash
@@ -331,7 +353,7 @@ pytest tests/test_strategist.py -v
 ```
 src/aaa/
   cache.py            # Content-hash AST cache for incremental scanning
-  cli.py              # CLI entry point (aaa scan, aaa scan-mcp)
+  cli.py              # CLI entry point (aaa scan, aaa scan-mcp, aaa test)
   graph.py            # LangGraph pipeline with parallel Executor/Prober fan-out
   llm.py              # Centralized LLM factory (Bedrock / Anthropic)
   mcp.py              # MCP Tool Schema Poisoning detector (regex + LLM)
@@ -340,6 +362,12 @@ src/aaa/
   state.py            # TripleAState shared schema with LangGraph reducers
   env/
     mock_server.py    # FastAPI Universal Mock Server with chaos control API
+  live/
+    discovery.py      # Victim module introspection (conventions-based)
+    planner.py        # LLM test plan generation from scan report
+    runner.py         # Test execution engine (inject → converse → verify)
+    judge.py          # Live evidence judge (real vs predicted)
+    orchestrator.py   # Pipeline coordinator (scan → discover → plan → run → judge)
   nodes/
     auditor.py        # AST extraction, LLM flaw analysis, multi-file + cross-file + schema poisoning
     strategist.py     # Tree-of-Thought attack planning
