@@ -2,20 +2,20 @@
 
 **Automated grey-box red-teaming for AI agentic workflows.**
 
-AI agents are being deployed to manage financial transactions, control infrastructure, and make autonomous decisions — but their logic flaws are invisible to traditional security tools. AAA is a multi-agent framework that combines **static source code analysis** with **dynamic chaos engineering** to find exploitable vulnerabilities in AI agent code *before* attackers do.
+AI agents are being deployed to manage financial transactions, control infrastructure, and make autonomous decisions — but their logic flaws are invisible to traditional security tools. AAA is a multi-agent red team that analyzes an agent's source code, plans multi-step attacks, verifies that exploit conditions are achievable on a programmable mock environment, and generates ready-to-use adversarial prompts — producing a comprehensive security audit before you deploy.
 
 ## Key Features
 
-- **Grey-box analysis** — AST-level source code inspection combined with runtime environment probing, not blind brute-force fuzzing
+- **Grey-box analysis** — AST-level source code inspection grounds every attack in an identified code-level flaw, not blind brute-force fuzzing
 - **Five specialized agents** — Auditor, Strategist, Executor, Prober, and Judge operate as a coordinated red team via LangGraph
 - **Parallel fan-out** — Executor and Prober run concurrently after the Strategist, with LangGraph state reducers auto-merging their outputs
+- **Environment verification** — The Executor sends real HTTP requests to a programmable Mock Server (via in-process ASGI), proving that chaos conditions (API errors, data poisoning, state injection) are actually achievable
+- **Adversarial prompt generation** — The Prober generates targeted conversation attacks (direct injection, tool misuse, guardrail bypass, multi-turn escalation) ready for manual or automated testing
 - **Multi-file directory scanning** — Scan entire projects with cross-file import graph analysis to detect inter-module trust boundary violations
 - **Incremental caching** — Content-hash based AST cache skips unchanged files across repeated scans
 - **MCP Tool Schema Poisoning detection** — Scans tool descriptions for hidden instructions, exfiltration URLs, sensitive data references, and safety overrides using deterministic regex patterns + LLM semantic analysis
 - **Live MCP Server scanning** — Connect to any MCP server you use (stdio or SSE), pull tool schemas via `tools/list`, and run poisoning detection — no source code needed
-- **Dual attack surface** — Tests both environment manipulation (API errors, data poisoning) and conversation injection (prompt attacks)
 - **Tree-of-Thought planning** — The Strategist uses multi-path reasoning to generate prioritized, multi-step attack chains
-- **State-level verdicts** — The Judge evaluates exploit chains at the data layer, not by chat output, producing drift scores and invariant violation metrics
 
 ## Architecture
 
@@ -69,17 +69,19 @@ flowchart TB
 |-------|------|----------------|
 | **Auditor** | Parses source code via Python AST, extracts tool schemas and system prompts, identifies logic flaws with Pydantic-structured LLM analysis | Static |
 | **Strategist** | Synthesizes Auditor findings via Tree-of-Thought reasoning into prioritized, multi-step attack strategies | Planning |
-| **Executor** | Maps each flaw to achievable environment conditions and verifies them against the Mock Server's chaos API | Environment |
-| **Prober** | Generates targeted adversarial prompts (direct injection, tool misuse, guardrail bypass, info extraction, multi-turn escalation) | Conversation |
-| **Judge** | Evaluates every exploit chain logically — confirms trigger conditions, traces code paths, renders final COMPROMISED/NOT COMPROMISED verdict | Evaluation |
+| **Executor** | Maps each flaw to environment conditions and verifies them with real HTTP requests to the Mock Server's chaos API (in-process ASGI) | Environment |
+| **Prober** | Generates targeted adversarial prompts (direct injection, tool misuse, guardrail bypass, info extraction, multi-turn escalation) for manual or automated testing | Conversation |
+| **Judge** | Evaluates every exploit chain via LLM reasoning over code + evidence, renders COMPROMISED/NOT COMPROMISED verdict with drift scores | Evaluation |
 
 ## How It Works
 
 **Grey-box methodology.** Unlike black-box fuzzers that blindly probe an API, AAA starts with full access to the victim agent's source code. The Auditor performs AST-level analysis to extract tool definitions, system prompts, global state, and control flow — then an LLM identifies logic flaws such as missing concurrency guards, conditional validation bypasses, and prompt-code invariant mismatches. Every subsequent attack is grounded in a specific, identified flaw.
 
-**Two attack surfaces, in parallel.** After the Strategist plans, the Executor and Prober fan out concurrently. The Executor proves that environmental conditions (API timeouts, data poisoning, error injection) can trigger code-level vulnerabilities via the programmable Mock Server. The Prober independently generates adversarial conversation prompts designed to exploit the same flaws through the agent's chat interface. LangGraph state reducers auto-merge their outputs before the Judge evaluates. This dual approach mirrors real-world threat models where attackers control both the environment and the conversation.
+**Two attack surfaces, in parallel.** After the Strategist plans, the Executor and Prober fan out concurrently. The Executor verifies that environmental chaos conditions (API timeouts, data poisoning, error injection) are achievable by sending real HTTP requests to the Mock Server's chaos API via in-process ASGI transport. The Prober generates adversarial conversation prompts designed to exploit the same flaws through the agent's chat interface. LangGraph state reducers auto-merge their outputs before the Judge evaluates.
 
-**State-level compromise detection.** AAA doesn't evaluate success by what the agent *says* — it evaluates what the agent *does*. The Judge traces each exploit chain from trigger condition through code path to invariant violation, producing a `drift_score` (overall exploitability) and `invariant_violation_index` (ratio of confirmed chains) that quantify the agent's security posture.
+**Logical chain evaluation.** The Judge evaluates each exploit chain via LLM reasoning: given the Executor's verified environment conditions and the Prober's conversation attacks, would the victim agent's code actually be compromised? It traces from trigger condition through code path to invariant violation, producing a `drift_score` (overall exploitability) and `invariant_violation_index` (ratio of confirmed chains). The current evaluation is logical — the Judge reasons over code and evidence, rather than observing a running agent.
+
+> **Roadmap: Live agent testing.** The Mock Server is designed to serve as a drop-in fake backend for victim agents. Phase 11 will close the loop: start the victim agent against the Mock Server, execute the attack tree in real time, and have the Judge compare actual agent state against expected business logic. See [CLAUDE.md](CLAUDE.md) for the full roadmap.
 
 ## Example: Scanning a Financial Agent
 
@@ -341,9 +343,9 @@ src/aaa/
   nodes/
     auditor.py        # AST extraction, LLM flaw analysis, multi-file + cross-file + schema poisoning
     strategist.py     # Tree-of-Thought attack planning
-    executor.py       # Environment exploit proof generation
+    executor.py       # Environment exploit proofs + real Mock Server HTTP verification
     prober.py         # Adversarial prompt generation (6 attack types)
-    judge.py          # Logical chain evaluation and verdict (3 attack surfaces)
+    judge.py          # LLM logical chain evaluation and verdict (3 attack surfaces)
 
 examples/
   victim_service.py   # Simple CRUD agent with uniqueness-bypass flaw
